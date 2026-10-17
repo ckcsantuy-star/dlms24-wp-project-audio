@@ -1,5 +1,5 @@
 
-name: Build DLMS-24 APK
+name: Build DLMS-24 APK Offline
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java
@@ -30,6 +30,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p app/src/main/java/com/dlms24/app
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/assets
 
           cat > settings.gradle <<'EOF'
           pluginManagement {
@@ -69,19 +71,38 @@ jobs:
                   applicationId 'com.dlms24.app'
                   minSdk 23
                   targetSdk 28
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '2.0'
               }
           }
+          EOF
+
+          cat > app/src/main/res/drawable/ic_dlms_logo.xml <<'EOF'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#101827"
+                  android:pathData="M0,0h108v108h-108z"/>
+              <path android:fillColor="#19D3C5"
+                  android:pathData="M18,26h8v56h-8z M82,26h8v56h-8z"/>
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M30,28h22c17,0 27,10 27,26s-10,26 -27,26h-22z M40,38v32h12c11,0 17,-6 17,-16s-6,-16 -17,-16z"/>
+              <path android:fillColor="#19D3C5"
+                  android:pathData="M14,18h10v4h-10z M84,86h10v4h-10z"/>
+          </vector>
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
 
               <application
                   android:theme="@android:style/Theme.Material.Light.NoActionBar"
                   android:label="DLMS-24"
+                  android:icon="@drawable/ic_dlms_logo"
                   android:usesCleartextTraffic="true">
 
                   <activity
@@ -96,6 +117,46 @@ jobs:
           </manifest>
           EOF
 
+          cat > app/src/main/assets/offline.html <<'EOF'
+          <!doctype html>
+          <html lang="id">
+          <head>
+          <meta name="viewport" content="width=device-width,initial-scale=1">
+          <meta charset="utf-8">
+          <title>DLMS-24</title>
+          <style>
+          *{box-sizing:border-box}
+          body{margin:0;background:#101827;color:#fff;font-family:Arial,sans-serif;
+          min-height:100vh;display:flex;align-items:center;justify-content:center;
+          text-align:center;padding:24px}
+          main{max-width:360px}
+          .logo{width:100px;height:100px;border-radius:24px;background:#19d3c5;
+          color:#101827;font-size:48px;font-weight:bold;display:grid;
+          place-items:center;margin:0 auto 24px}
+          h1{margin:0 0 12px;font-size:28px}
+          p{color:#cbd5e1;line-height:1.6}
+          .status{margin:24px 0;padding:14px;border:1px solid #475569;
+          border-radius:12px}
+          button{width:100%;padding:15px;border:0;border-radius:12px;
+          background:#19d3c5;color:#101827;font-size:16px;font-weight:bold}
+          small{display:block;color:#94a3b8;margin-top:20px}
+          </style>
+          </head>
+          <body>
+          <main>
+          <div class="logo">D24</div>
+          <h1>DLMS-24</h1>
+          <p>Digital Loudspeaker Management System</p>
+          <div class="status">ESP32 belum terhubung</div>
+          <p>Sambungkan HP ke Wi-Fi DLMS-24, nyalakan ESP32,
+          lalu coba sambungkan kembali.</p>
+          <button onclick="Android.retryConnection()">Coba Sambungkan</button>
+          <small>Mode offline · Antarmuka kontrol memerlukan ESP32</small>
+          </main>
+          </body>
+          </html>
+          EOF
+
           cat > app/src/main/java/com/dlms24/app/MainActivity.java <<'EOF'
           package com.dlms24.app;
 
@@ -103,20 +164,80 @@ jobs:
           import android.os.Bundle;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import android.webkit.WebChromeClient;
           import android.webkit.WebSettings;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceError;
+          import android.webkit.JavascriptInterface;
 
           public class MainActivity extends Activity {
+              private WebView web;
+              private boolean showingOffline = false;
+              private static final String DEVICE_URL = "http://192.168.4.1/";
+
               @Override
               protected void onCreate(Bundle state) {
                   super.onCreate(state);
-                  WebView web = new WebView(this);
+                  web = new WebView(this);
                   setContentView(web);
 
                   WebSettings settings = web.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
-                  web.setWebViewClient(new WebViewClient());
-                  web.loadUrl("http://192.168.4.1/");
+                  web.setWebChromeClient(new WebChromeClient());
+                  web.addJavascriptInterface(new Bridge(), "Android");
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          showingOffline = url.startsWith("file://");
+                      }
+
+                      @Override
+                      public void onReceivedError(WebView view,
+                              WebResourceRequest request,
+                              WebResourceError error) {
+                          if (request.isForMainFrame()) {
+                              showOffline();
+                          }
+                      }
+                  });
+
+                  connectDevice();
+              }
+
+              private void connectDevice() {
+                  showingOffline = false;
+                  web.loadUrl(DEVICE_URL);
+              }
+
+              private void showOffline() {
+                  showingOffline = true;
+                  web.loadUrl("file:///android_asset/offline.html");
+              }
+
+              private class Bridge {
+                  @JavascriptInterface
+                  public void retryConnection() {
+                      runOnUiThread(() -> connectDevice());
+                  }
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (showingOffline) {
+                      super.onBackPressed();
+                  } else if (web.canGoBack()) {
+                      web.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (web != null) web.destroy();
+                  super.onDestroy();
               }
           }
           EOF
@@ -127,5 +248,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DLMS-24-APK
+          name: DLMS-24-APK-v2
           path: app/build/outputs/apk/debug/app-debug.apk
